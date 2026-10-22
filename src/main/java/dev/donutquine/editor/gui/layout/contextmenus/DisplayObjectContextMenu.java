@@ -24,6 +24,7 @@ import dev.donutquine.editor.renderer.impl.EditorStage;
 import dev.donutquine.editor.renderer.impl.RendererHelper;
 import dev.donutquine.exporter.FfmpegVideoExporter;
 import dev.donutquine.exporter.VideoExporter;
+import dev.donutquine.exporter.FrameExporter;
 import dev.donutquine.exporter.VideoFormat;
 import dev.donutquine.exporter.VideoFormats;
 import dev.donutquine.math.ReadonlyRect;
@@ -73,6 +74,9 @@ public class DisplayObjectContextMenu extends ContextMenu {
         // Note: aka quick export, which uses user settings (but not impl yet)
         JMenuItem exportButton = this.add("Export", KeyEvent.VK_X);
         exportButton.addActionListener(this::export);
+
+        JMenuItem exportFramesButton = this.add("Export frames", KeyEvent.VK_F);
+        exportFramesButton.addActionListener(this::exportFrames);
 
         exportAsMenu = this.addMenu("Export as...", KeyEvent.VK_A);
 
@@ -226,6 +230,60 @@ public class DisplayObjectContextMenu extends ContextMenu {
 
                 stage.doInRenderThread(() -> {
                     RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, videoExporter);
+                });
+            } else {
+                Path filepath = outputDirectory.resolve(getDisplayObjectFilename(renderableObject, pixelSize));
+                stage.doInRenderThread(() -> {
+                    RendererHelper.exportAsImage(renderableObject, filepath, pixelSize, shouldPreserveStageCenter);
+                });
+            }
+        }
+
+        stage.doInRenderThread(() -> {
+            RendererHelper.rollbackRenderer(stage, viewport);
+        });
+    }
+
+    private void exportFrames(ActionEvent actionEvent) {
+        EditorStage stage = EditorStage.getInstance();
+        ReadonlyRect viewport = stage.getCamera().getViewport();
+
+        float pixelSize = this.preferences.getPixelSize();
+        boolean shouldPreserveStageCenter = this.preferences.shouldPreserveStageCenter();
+
+        Path outputDirectory = EditorPreferences.DEFAULT_SCREENSHOT_FOLDER;
+
+        Matrix2x3 matrix = new Matrix2x3();
+        matrix.scaleMultiply(pixelSize, pixelSize);
+
+        ColorTransform colorTransform = new ColorTransform();
+
+        for (int row : this.table.getSelectedRows()) {
+            int displayObjectId = getDisplayObjectId(row);
+
+            DisplayObject renderableObject = getRenderableObject(displayObjectId);
+            if (renderableObject == null || renderableObject.isTextField()) continue;
+
+            if (canExportAsVideo(renderableObject)) {
+
+                MovieClip movieClip = (MovieClip) renderableObject;
+
+                String filename = getClipFilename(movieClip, movieClip.getState(), movieClip.getCurrentFrame(), movieClip.getLoopFrame(), pixelSize);
+
+                Path outputFilepath = outputDirectory.resolve(String.join(".", filename, "png"));
+
+                Rect bounds = RendererHelper.getRenderBounds(stage.calculateBoundsForAllFrames(movieClip), shouldPreserveStageCenter);
+                bounds.scale(pixelSize);
+
+                ReadonlyRect ceilBounds = RendererHelper.roundBounds(bounds, false);
+
+                int width = (int) ceilBounds.getWidth();
+                int height = (int) ceilBounds.getHeight();
+
+                FrameExporter frameExporter = new FrameExporter(width, height, outputFilepath);
+
+                stage.doInRenderThread(() -> {
+                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, frameExporter);
                 });
             } else {
                 Path filepath = outputDirectory.resolve(getDisplayObjectFilename(renderableObject, pixelSize));

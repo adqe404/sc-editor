@@ -5,12 +5,12 @@ import java.nio.file.Path;
 
 import dev.donutquine.utilities.ImageUtils;
 
-public class FrameVideoExporter implements VideoExporter {
+public class FrameExporter implements VideoExporter {
     protected final Path filepath;
     protected final Path framesDirectory;
     protected final int width, height;
 
-    public FrameVideoExporter(int width, int height, Path filepath) {
+    public FrameExporter(int width, int height, Path filepath) {
         this.width = width;
         this.height = height;
         this.filepath = filepath;
