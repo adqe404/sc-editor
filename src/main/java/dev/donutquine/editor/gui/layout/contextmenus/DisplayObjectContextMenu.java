@@ -245,7 +245,7 @@ public class DisplayObjectContextMenu extends ContextMenu {
                 Path outputFilepath;
                 ReadonlyRect ceilBounds;
                 int width, height;
-                VideoExporter exporter;
+                VideoExporter videoExporter;
                 switch (kind) {
                     case VIDEO:
                         // TODO: get video format from user settings
@@ -259,7 +259,7 @@ public class DisplayObjectContextMenu extends ContextMenu {
                         height = (int) ceilBounds.getHeight();
 
                         try {
-                            exporter = new FfmpegVideoExporter(width, height, movieClip.getFps(), format, null, outputFilepath);
+                            videoExporter = new FfmpegVideoExporter(width, height, movieClip.getFps(), format, null, outputFilepath);
                         } catch (IOException e) {
                             // TODO Auto-generated catch block
                             e.printStackTrace();
@@ -274,13 +274,13 @@ public class DisplayObjectContextMenu extends ContextMenu {
                         width = (int) ceilBounds.getWidth();
                         height = (int) ceilBounds.getHeight();
 
-                        exporter = new FrameExporter(width, height, outputFilepath);
+                        videoExporter = new FrameExporter(width, height, outputFilepath);
                         break;
                     default:
                         throw new IllegalStateException("Unexpected export kind: " + kind);
                 }
                 stage.doInRenderThread(() -> {
-                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, exporter);
+                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, videoExporter);
                 });
             } else {
                 Path filepath = outputDirectory.resolve(getDisplayObjectFilename(renderableObject, pixelSize));

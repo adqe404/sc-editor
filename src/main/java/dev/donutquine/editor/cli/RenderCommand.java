@@ -3,17 +3,22 @@ package dev.donutquine.editor.cli;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+
 import org.kohsuke.args4j.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import com.jogamp.opengl.GLOffscreenAutoDrawable;
+
 import dev.donutquine.editor.assets.SupercellSWFAssetFile;
 import dev.donutquine.editor.assets.SupercellSWFAssetFileLoader;
 import dev.donutquine.editor.assets.exceptions.AssetLoadingException;
 import dev.donutquine.editor.renderer.Framebuffer;
 import dev.donutquine.editor.renderer.impl.EditorStage;
 import dev.donutquine.editor.renderer.impl.RendererHelper;
+import dev.donutquine.exporter.FrameExporter;
 import dev.donutquine.exporter.SynchronousFfmpegVideoExporter;
+import dev.donutquine.exporter.VideoExporter;
 import dev.donutquine.exporter.VideoFormat;
 import dev.donutquine.exporter.VideoFormats;
 import dev.donutquine.math.ReadonlyRect;
@@ -46,6 +51,9 @@ public class RenderCommand implements CliCommand {
     @Option(name = "--format", aliases = {"-f"})
     private VideoFormats.Format format = VideoFormats.Format.WEBM;
 
+    @Option(name = "--frames")
+    private boolean frames = false;
+
     @Option(name = "--width", aliases = {"-w"})
     private int width = -1;
     @Option(name = "--height", aliases = {"-h"})
@@ -63,6 +71,9 @@ public class RenderCommand implements CliCommand {
 
     @Option(name = "--pixel-scale")
     private float pixelSize = 1.0f;
+
+    @Option(name = "--preserve-stage-center")
+    boolean shouldPreserveStageCenter = false;
 
     @Option(name = "--start-frame")
     private int startFrame = -1;
@@ -85,7 +96,6 @@ public class RenderCommand implements CliCommand {
         drawable.display();
 
         EditorStage stage = EditorStage.getInstance();
-        boolean shouldPreserveStageCenter = true;
 
         try {
             for (String exportName : exports) {
@@ -99,12 +109,6 @@ public class RenderCommand implements CliCommand {
                 int framebufferWidth = width != -1 ? width : (int) Math.ceil(ceilBounds.getWidth());
                 int framebufferHeight = height != -1 ? height : (int) Math.ceil(ceilBounds.getHeight());
 
-                VideoFormat videoFormat = format.format;
-                if (videoFormat.requiresSizeDividableByTwo()) {
-                    if (framebufferWidth % 2 != 0) framebufferWidth++;
-                    if (framebufferHeight % 2 != 0) framebufferHeight++;
-                }
-
                 int finalFramebufferWidth = framebufferWidth, finalFramebufferHeight = framebufferHeight;
 
                 Matrix2x3 matrix = new Matrix2x3();
@@ -113,14 +117,24 @@ public class RenderCommand implements CliCommand {
                 ColorTransform colorTransform = new ColorTransform();
 
                 if (displayObject instanceof MovieClip movieClip && getFrameCount(movieClip) > 1 && (startFrame == -1 || endFrame == -1 || (endFrame - startFrame + 1) > 1)) {
-                    Path outputPath = outputDirectory.resolve(exportName + "." + videoFormat.name());
-
-                    SynchronousFfmpegVideoExporter videoExporter;
-                    try {
-                        videoExporter = new SynchronousFfmpegVideoExporter(finalFramebufferWidth, finalFramebufferHeight, movieClip.getFps(), videoFormat, null, outputPath);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        return 2;
+                    Path outputPath;
+                    VideoExporter videoExporter;
+                    if (frames) {
+                        outputPath = outputDirectory.resolve(exportName + "." + "png");
+                        videoExporter = new FrameExporter(finalFramebufferWidth, finalFramebufferHeight, outputPath);
+                    } else {
+                        VideoFormat videoFormat = format.format;
+                        if (videoFormat.requiresSizeDividableByTwo()) {
+                            if (framebufferWidth % 2 != 0) framebufferWidth++;
+                            if (framebufferHeight % 2 != 0) framebufferHeight++;
+                        }
+                        outputPath = outputDirectory.resolve(exportName + "." + videoFormat.name());
+                        try {
+                            videoExporter = new SynchronousFfmpegVideoExporter(finalFramebufferWidth, finalFramebufferHeight, movieClip.getFps(), videoFormat, null, outputPath);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            return 2;
+                        }
                     }
 
                     stage.doInRenderThread(() -> {
