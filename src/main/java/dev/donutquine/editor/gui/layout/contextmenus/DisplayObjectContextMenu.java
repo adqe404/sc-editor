@@ -9,13 +9,18 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.text.DecimalFormat;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.stream.Collectors;
+
 import javax.swing.JMenu;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JTable;
+
 import com.formdev.flatlaf.util.SystemFileChooser;
 import com.formdev.flatlaf.util.SystemFileChooser.FileNameExtensionFilter;
+
 import dev.donutquine.editor.gui.layout.SupercellSWFLayoutController;
 import dev.donutquine.editor.gui.layout.SystemFileChooserUtil;
 import dev.donutquine.editor.gui.layout.components.tables.JTablePopupMenuListener;
@@ -23,8 +28,8 @@ import dev.donutquine.editor.gui.settings.EditorPreferences;
 import dev.donutquine.editor.renderer.impl.EditorStage;
 import dev.donutquine.editor.renderer.impl.RendererHelper;
 import dev.donutquine.exporter.FfmpegVideoExporter;
-import dev.donutquine.exporter.VideoExporter;
 import dev.donutquine.exporter.FrameExporter;
+import dev.donutquine.exporter.VideoExporter;
 import dev.donutquine.exporter.VideoFormat;
 import dev.donutquine.exporter.VideoFormats;
 import dev.donutquine.math.ReadonlyRect;
@@ -40,7 +45,6 @@ import dev.donutquine.swf.exceptions.UnableToFindObjectException;
 import dev.donutquine.swf.movieclips.MovieClipOriginal;
 import dev.donutquine.swf.movieclips.MovieClipState;
 import dev.donutquine.swf.textfields.TextFieldOriginal;
-import dev.donutquine.utilities.ByteArrayFlavor;
 import dev.donutquine.utilities.MovieClipHelper;
 import dev.donutquine.utilities.PathUtils;
 
@@ -50,9 +54,14 @@ public class DisplayObjectContextMenu extends ContextMenu {
     private final JTable table;
     private final SupercellSWFLayoutController swfLayoutController;
 
+    private enum ExportKind {
+        VIDEO,
+        IMAGE
+    }
+
+    private final JMenu exportAsMenu;
     private final JMenuItem exportAsVideoButton;
     private final JMenuItem exportAsGifButton;
-    private final JMenu exportAsMenu;
 
     private EditorPreferences preferences;
 
@@ -72,10 +81,12 @@ public class DisplayObjectContextMenu extends ContextMenu {
         copyAsBytesButton.addActionListener(this::copyAsBytes);
 
         // Note: aka quick export, which uses user settings (but not impl yet)
-        JMenuItem exportButton = this.add("Export", KeyEvent.VK_X);
-        exportButton.addActionListener(this::export);
+        JMenu exportMenu = this.addMenu("Export...", KeyEvent.VK_X);
+        
+        JMenuItem exportWebmButton = this.add(exportMenu, "Export video", KeyEvent.VK_X);
+        exportWebmButton.addActionListener(this::exportVideo);
 
-        JMenuItem exportFramesButton = this.add("Export frames", KeyEvent.VK_F);
+        JMenuItem exportFramesButton = this.add(exportMenu, "Export frames", KeyEvent.VK_F);
         exportFramesButton.addActionListener(this::exportFrames);
 
         exportAsMenu = this.addMenu("Export as...", KeyEvent.VK_A);
@@ -154,34 +165,55 @@ public class DisplayObjectContextMenu extends ContextMenu {
     }
 
     private void copyExportName(ActionEvent event) {
-        int selectedRow = this.table.getSelectedRow();
-        if (selectedRow == -1) return;
+        int[] selectedRows = this.table.getSelectedRows();
+        if (selectedRows.length == 0) return;
 
-        String displayObjectName = getDisplayObjectName(selectedRow);
+        String exportNames;
+        if (selectedRows.length == 1) {
+            exportNames = getDisplayObjectName(selectedRows[0]);
+        } else {
+            exportNames = Arrays.stream(selectedRows)
+                .mapToObj(this::getDisplayObjectName)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
+        }
 
-        SYSTEM_CLIPBOARD.setContents(new StringSelection(displayObjectName), null);
+        SYSTEM_CLIPBOARD.setContents(new StringSelection(exportNames), null);
     }
 
     private void copyAsBytes(ActionEvent event) {
-        int selectedRow = this.table.getSelectedRow();
-        if (selectedRow == -1) return;
+        int[] selectedRows = this.table.getSelectedRows();
+        if (selectedRows.length == 0) return;
 
         SupercellSWF swf = this.swfLayoutController.assetFile.asset;
         if (swf == null) return;
 
+        String bytes;
+        if (selectedRows.length == 1) {
+            bytes = getDisplayObjectBytes(swf, selectedRows[0]);
+        } else {
+            bytes = Arrays.stream(selectedRows)
+                .mapToObj(row -> getDisplayObjectBytes(swf, row))
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
+        }
+
+        SYSTEM_CLIPBOARD.setContents(new StringSelection(bytes), null);
+    }
+
+    private String getDisplayObjectBytes(SupercellSWF swf, int selectedRow) {
         int displayObjectId = getDisplayObjectId(selectedRow);
         try {
             DisplayObjectOriginal originalDisplayObject = swf.getOriginalDisplayObject(displayObjectId, null);
             ByteStream stream = new ByteStream();
             originalDisplayObject.save(stream);
-
-            SYSTEM_CLIPBOARD.setContents(new ByteArrayFlavor(stream.getData()), null);
+            return Arrays.toString(stream.getData());
         } catch (UnableToFindObjectException e) {
             throw new RuntimeException(e);
         }
     }
 
-    private void export(ActionEvent actionEvent) {
+    private void export(ExportKind kind) {
         EditorStage stage = EditorStage.getInstance();
         ReadonlyRect viewport = stage.getCamera().getViewport();
 
@@ -202,34 +234,53 @@ public class DisplayObjectContextMenu extends ContextMenu {
             if (renderableObject == null || renderableObject.isTextField()) continue;
 
             if (canExportAsVideo(renderableObject)) {
-                // TODO: get video format from user settings
-                VideoFormat format = VideoFormats.WEBM;
 
                 MovieClip movieClip = (MovieClip) renderableObject;
 
                 String filename = getClipFilename(movieClip, movieClip.getState(), movieClip.getCurrentFrame(), movieClip.getLoopFrame(), pixelSize);
 
-                Path outputFilepath = outputDirectory.resolve(String.join(".", filename, format.name()));
-
                 Rect bounds = RendererHelper.getRenderBounds(stage.calculateBoundsForAllFrames(movieClip), shouldPreserveStageCenter);
                 bounds.scale(pixelSize);
+                
+                Path outputFilepath;
+                ReadonlyRect ceilBounds;
+                int width, height;
+                VideoExporter exporter;
+                switch (kind) {
+                    case VIDEO:
+                        // TODO: get video format from user settings
+                        VideoFormat format = VideoFormats.WEBM;
 
-                ReadonlyRect ceilBounds = RendererHelper.roundBounds(bounds, format.requiresSizeDividableByTwo());
+                        outputFilepath = outputDirectory.resolve(String.join(".", filename, format.name()));
 
-                int width = (int) ceilBounds.getWidth();
-                int height = (int) ceilBounds.getHeight();
+                        ceilBounds = RendererHelper.roundBounds(bounds, format.requiresSizeDividableByTwo());
 
-                FfmpegVideoExporter videoExporter;
-				try {
-                    videoExporter = new FfmpegVideoExporter(width, height, movieClip.getFps(), format, null, outputFilepath);
-				} catch (IOException e) {
-                    // TODO Auto-generated catch block
-					e.printStackTrace();
-                    return;
-				}
+                        width = (int) ceilBounds.getWidth();
+                        height = (int) ceilBounds.getHeight();
 
+                        try {
+                            exporter = new FfmpegVideoExporter(width, height, movieClip.getFps(), format, null, outputFilepath);
+                        } catch (IOException e) {
+                            // TODO Auto-generated catch block
+                            e.printStackTrace();
+                            return;
+                        }
+                        break;
+                    case IMAGE:
+                        outputFilepath = outputDirectory.resolve(String.join(".", filename, "png"));
+                        
+                        ceilBounds = RendererHelper.roundBounds(bounds, false);
+
+                        width = (int) ceilBounds.getWidth();
+                        height = (int) ceilBounds.getHeight();
+
+                        exporter = new FrameExporter(width, height, outputFilepath);
+                        break;
+                    default:
+                        throw new IllegalStateException("Unexpected export kind: " + kind);
+                }
                 stage.doInRenderThread(() -> {
-                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, videoExporter);
+                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, exporter);
                 });
             } else {
                 Path filepath = outputDirectory.resolve(getDisplayObjectFilename(renderableObject, pixelSize));
@@ -244,58 +295,12 @@ public class DisplayObjectContextMenu extends ContextMenu {
         });
     }
 
+    private void exportVideo(ActionEvent actionEvent) {
+        export(ExportKind.VIDEO);
+    }
+
     private void exportFrames(ActionEvent actionEvent) {
-        EditorStage stage = EditorStage.getInstance();
-        ReadonlyRect viewport = stage.getCamera().getViewport();
-
-        float pixelSize = this.preferences.getPixelSize();
-        boolean shouldPreserveStageCenter = this.preferences.shouldPreserveStageCenter();
-
-        Path outputDirectory = EditorPreferences.DEFAULT_SCREENSHOT_FOLDER;
-
-        Matrix2x3 matrix = new Matrix2x3();
-        matrix.scaleMultiply(pixelSize, pixelSize);
-
-        ColorTransform colorTransform = new ColorTransform();
-
-        for (int row : this.table.getSelectedRows()) {
-            int displayObjectId = getDisplayObjectId(row);
-
-            DisplayObject renderableObject = getRenderableObject(displayObjectId);
-            if (renderableObject == null || renderableObject.isTextField()) continue;
-
-            if (canExportAsVideo(renderableObject)) {
-
-                MovieClip movieClip = (MovieClip) renderableObject;
-
-                String filename = getClipFilename(movieClip, movieClip.getState(), movieClip.getCurrentFrame(), movieClip.getLoopFrame(), pixelSize);
-
-                Path outputFilepath = outputDirectory.resolve(String.join(".", filename, "png"));
-
-                Rect bounds = RendererHelper.getRenderBounds(stage.calculateBoundsForAllFrames(movieClip), shouldPreserveStageCenter);
-                bounds.scale(pixelSize);
-
-                ReadonlyRect ceilBounds = RendererHelper.roundBounds(bounds, false);
-
-                int width = (int) ceilBounds.getWidth();
-                int height = (int) ceilBounds.getHeight();
-
-                FrameExporter frameExporter = new FrameExporter(width, height, outputFilepath);
-
-                stage.doInRenderThread(() -> {
-                    RendererHelper.exportAsVideo(movieClip, matrix, colorTransform, ceilBounds, frameExporter);
-                });
-            } else {
-                Path filepath = outputDirectory.resolve(getDisplayObjectFilename(renderableObject, pixelSize));
-                stage.doInRenderThread(() -> {
-                    RendererHelper.exportAsImage(renderableObject, filepath, pixelSize, shouldPreserveStageCenter);
-                });
-            }
-        }
-
-        stage.doInRenderThread(() -> {
-            RendererHelper.rollbackRenderer(stage, viewport);
-        });
+        export(ExportKind.IMAGE);
     }
 
     private void exportAsImageCallback(ActionEvent actionEvent) {
